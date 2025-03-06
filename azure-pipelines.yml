@@ -1,0 +1,276 @@
+trigger: 
+ - none 
+#  branches:
+#    include:
+#      - main
+#      - feature/*
+
+variables:
+- group: Terraform-Backend  # Terraform state variables
+- group: Terraform-Provider  # Terraform provider variables
+- group: AzureDevOps-Provider  # Azure DevOps provider variables
+- group: Azure-SQL-Database # DB variables
+- group: Azure-Web-App # Windows web app name with rg
+- name: ASPNETCORE_ENVIRONMENT
+  value: "Production"
+
+stages:
+
+# === Terraform Stage - Infrastructure Provisioning ===
+- stage: Terraform_Provisioning
+  displayName: "Provision Infrastructure"
+  jobs:
+  - job: Terraform
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@0
+        displayName: "Install Terraform"
+        inputs:
+          terraformVersion: 'latest'
+
+      # Terraform initualize     
+      - task: TerraformTaskV2@2
+        displayName: "Terraform Init"
+        inputs:
+          provider: "azurerm"
+          command: "init"
+          backendServiceArm: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
+          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
+          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
+          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"
+        env:
+          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"  
+          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
+          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"  
+          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
+          TF_LOG: DEBUG    
+
+      # Terraform plan    
+      - task: TerraformTaskV2@2
+        displayName: "Terraform Plan"
+        inputs:
+          provider: "azurerm"
+          command: "plan"
+          environmentServiceNameAzureRM: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
+          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
+          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
+          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"  
+        env:
+          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"
+          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
+          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"
+          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
+          TF_LOG: DEBUG 
+
+      # Terraform apply   
+      - task: TerraformTaskV2@2
+        displayName: "Terraform apply"
+        inputs:
+          provider: "azurerm"
+          command: "apply"
+          environmentServiceNameAzureRM: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
+          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
+          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
+          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"  
+          commandOptions: '-auto-approve'
+        env:
+          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"
+          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
+          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"
+          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
+          TF_LOG: DEBUG 
+
+# === Build Stage ===
+- stage: Build
+  displayName: "Build Application"
+  dependsOn: Terraform_Provisioning
+  jobs:
+  - job: Build
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+      - task: UseDotNet@2
+        displayName: "Install .NET Core SDK 6.0"
+        inputs:
+          packageType: 'sdk'
+          version: '6.0.x'
+      
+      # Restore NuGet Packages (Ensures EF Core is available)
+      - script: |
+          dotnet restore
+        displayName: "Restore Dependencies"
+
+      # Install Entity Framework CLI (dotnet-ef)
+      - script: |
+          dotnet tool uninstall --global dotnet-ef || true
+          dotnet tool install --global dotnet-ef --version 6.0.21
+          dotnet ef --version
+        displayName: "Install Entity Framework CLI"
+
+      #  Run Commit Message Validation from External Script
+      - script: |
+          bash scripts/validate_commit.sh "$(Build.SourceVersionMessage)"
+        displayName: "Validate Commit Message"
+        workingDirectory: $(Build.SourcesDirectory)
+                
+      # Run Build Number Formatting from External Script
+      - script: |
+          bash scripts/set_build_number.sh
+        displayName: "Set Build Number Format"
+        workingDirectory: $(Build.SourcesDirectory)
+      
+      # Build App  
+      - script: |
+          dotnet build --configuration Release 
+        displayName: "Build Application"
+      
+      # Generate SQL Migration Script  
+      - script: |
+          mkdir -p $(Build.ArtifactStagingDirectory)/db-migration
+          dotnet ef migrations script -p DotNetCoreSqlDb/DotNetCoreSqlDb.csproj -o $(Build.ArtifactStagingDirectory)/db-migration/migration.sql -i
+        displayName: "Generate SQL Migration Script"
+      
+      - script: |
+          mkdir -p $(Build.ArtifactStagingDirectory)/app
+          dotnet publish -c Release -o $(Build.ArtifactStagingDirectory)/app
+        displayName: "Publis Application"
+
+      - task: PublishBuildArtifacts@1
+        displayName: "Publish Application Code"
+        inputs:
+          pathToPublish: "$(Build.ArtifactStagingDirectory)/app"
+          artifactName: "app"
+
+      - task: PublishBuildArtifacts@1
+        displayName: "Publish SQL Migration Script"
+        inputs:
+          pathToPublish: "$(Build.ArtifactStagingDirectory)/db-migration"
+          artifactName: "db-migration"
+
+# === Deploy to Staging (PROD Environment) ===
+- stage: Deploy_Staging
+  displayName: "Deploy App to Staging (PROD)"
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+
+  # Manual Validation Before Deployment
+  - job: waitForValidation
+    displayName: "Wait for External Validation"
+    pool: server  # Runs on the Azure DevOps server, not an agent
+    timeoutInMinutes: 4320  # Job times out in 3 days
+    steps:
+      - task: ManualValidation@0
+        timeoutInMinutes: 2880  # Task times out in 2 days
+        inputs:
+          notifyUsers: "your-email@example.com"  # Replace with actual email
+          instructions: "Please validate the build configuration and resume deployment."
+          onTimeout: "resume"  
+
+  # Deployment Job (Now Uses `deployment`)
+  - deployment: Deploy
+    displayName: "Deploy App to Staging Slot (PROD)"
+    dependsOn: waitForValidation  
+    condition: succeeded()
+    environment: PROD  
+    pool:
+      vmImage: "windows-latest"
+    strategy:
+      runOnce:  
+        deploy:
+          steps:
+            # Download the published SQL Migration artifact
+            - task: DownloadPipelineArtifact@2
+              displayName: "Download SQL Migration Script"
+              inputs:
+                buildType: "current"
+                artifactName: "db-migration"
+                targetPath: "$(Pipeline.Workspace)/db-migration"
+
+            - script: |
+                ls "$(Pipeline.Workspace)/db-migration"
+              displayName: "Debug: List db-migration Directory"
+    
+            # Apply Database Migrations
+            - task: AzureCLI@2
+              displayName: "Update Database Schema"
+              inputs:
+                azureSubscription: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  sqlcmd -S tcp:$(SQL_SERVER_NAME).database.windows.net -d $(SQL_DATABASE_NAME) -U $(SQL_ADMIN) -P $(SQL_PASSWORD) -i "$(Pipeline.Workspace)/db-migration/migration.sql"
+
+            # Set ASPNETCORE_ENVIRONMENT in Web App
+            - task: AzureCLI@2
+              displayName: "Set ASPNETCORE_ENVIRONMENT in Web App"
+              inputs:
+                azureSubscription: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  az webapp config appsettings set --resource-group $(RESOURCE_GROUP) --name $(WEB_APP_NAME) --settings ASPNETCORE_ENVIRONMENT=Production
+
+            # Download the Published App Artifact
+            - task: DownloadPipelineArtifact@2
+              displayName: "Download Application Artifact"
+              inputs:
+                buildType: "current"
+                artifactName: "app"
+                targetPath: "$(Pipeline.Workspace)/app"
+
+            # Debug: Verify the app directory
+            - script: |
+                ls "$(Pipeline.Workspace)/app"
+              displayName: "Debug: List app Directory"
+
+            # Ensure the Staging Slot Exists
+            - task: AzureCLI@2
+              displayName: "Create Staging Slot"
+              inputs:
+                azureSubscription: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+                scriptType: "bash"
+                scriptLocation: "inlineScript"
+                inlineScript: |
+                  echo "Creating staging slot ..."
+                  az webapp deployment slot create --name "$(WEB_APP_NAME)" --resource-group "$(RESOURCE_GROUP)" --slot staging
+                  echo "Staging slot is ready."
+
+            # Deploy App to Staging Slot (PROD Environment)
+            - task: AzureRmWebAppDeployment@4
+              displayName: "Deploy App to Staging Slot"
+              inputs:
+                ConnectionType: "AzureRM"
+                azureSubscription: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+                appType: "webApp"
+                WebAppName: "$(WEB_APP_NAME)"
+                DeployToSlotOrASE: true
+                ResourceGroupName: "$(RESOURCE_GROUP)"
+                SlotName: "staging"
+                package: "$(Pipeline.Workspace)/app"
+
+
+# === Swap Slots to Production ===
+- stage: Swap_Prod
+  displayName: "Swap Staging to Production"
+  dependsOn: Deploy_Staging
+  condition: succeeded()
+  jobs:
+  - job: Swap
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+      - task: AzureCLI@2
+        displayName: "Swap Slots"
+        inputs:
+          azureSubscription: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
+          scriptType: "bash"
+          scriptLocation: "inlineScript"
+          inlineScript: |
+            az webapp deployment slot swap --resource-group $(RESOURCE_GROUP) --name $(WEB_APP_NAME) --slot staging --target-slot production
