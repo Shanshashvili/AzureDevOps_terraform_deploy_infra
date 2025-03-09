@@ -1,99 +1,23 @@
 trigger: 
- - none 
-#  branches:
-#    include:
-#      - main
-#      - feature/*
-
+# - none 
+  branches:
+    include:
+      - main
+      - feature/*
+   
 variables:
-- group: Terraform-Backend  # Terraform state variables
-- group: Terraform-Provider  # Terraform provider variables
-- group: AzureDevOps-Provider  # Azure DevOps provider variables
-- group: Azure-SQL-Database # DB variables
-- group: Azure-Web-App # Windows web app name with rg
-- name: ASPNETCORE_ENVIRONMENT
-  value: "Production"
-
-stages:
-
-# === Terraform Stage - Infrastructure Provisioning ===
-- stage: Terraform_Provisioning
-  displayName: "Provision Infrastructure"
-  jobs:
-  - job: Terraform
-    pool:
-      vmImage: 'windows-latest'
-    steps:
-      - checkout: self
-
-      - task: TerraformInstaller@0
-        displayName: "Install Terraform"
-        inputs:
-          terraformVersion: 'latest'
-
-      # Terraform initualize     
-      - task: TerraformTaskV2@2
-        displayName: "Terraform Init"
-        inputs:
-          provider: "azurerm"
-          command: "init"
-          backendServiceArm: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
-          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
-          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
-          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
-          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"
-        env:
-          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"  
-          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
-          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"  
-          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
-          TF_LOG: DEBUG    
-
-      # Terraform plan    
-      - task: TerraformTaskV2@2
-        displayName: "Terraform Plan"
-        inputs:
-          provider: "azurerm"
-          command: "plan"
-          environmentServiceNameAzureRM: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
-          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
-          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
-          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
-          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"  
-        env:
-          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"
-          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
-          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"
-          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
-          TF_LOG: DEBUG 
-
-      # Terraform apply   
-      - task: TerraformTaskV2@2
-        displayName: "Terraform apply"
-        inputs:
-          provider: "azurerm"
-          command: "apply"
-          environmentServiceNameAzureRM: "$(AZURE_GENERAL_SERVICE_CONNECTION)"
-          backendAzureRmResourceGroupName: "$(TF_STATE_RESOURCE_GROUP)"
-          backendAzureRmStorageAccountName: "$(TF_STATE_STORAGE_ACCOUNT)"
-          backendAzureRmContainerName: "$(TF_STATE_CONTAINER)"
-          backendAzureRmKey: "$(TF_STATE_KEY_TASK2)"  
-          commandOptions: '-auto-approve'
-        env:
-          ARM_CLIENT_ID: "$(ARM_CLIENT_ID)"
-          ARM_CLIENT_SECRET: "$(ARM_CLIENT_SECRET)"  
-          ARM_SUBSCRIPTION_ID: "$(ARM_SUBSCRIPTION_ID)"
-          ARM_TENANT_ID: "$(ARM_TENANT_ID)"  
-          TF_LOG: DEBUG 
+  - group: Azure-SQL-Database 
+  - group: Task-2-Vars
 
 # === Build Stage ===
+stages:
+  
 - stage: Build
   displayName: "Build Application"
-  dependsOn: Terraform_Provisioning
   jobs:
   - job: Build
     pool:
-      vmImage: 'windows-latest'
+      vmImage: 'ubuntu-latest'
     steps:
       - task: UseDotNet@2
         displayName: "Install .NET Core SDK 6.0"
@@ -180,7 +104,7 @@ stages:
     condition: succeeded()
     environment: PROD  
     pool:
-      vmImage: "windows-latest"
+      vmImage: "ubuntu-latest"
     strategy:
       runOnce:  
         deploy:
@@ -264,7 +188,7 @@ stages:
   jobs:
   - job: Swap
     pool:
-      vmImage: 'windows-latest'
+      vmImage: 'ubuntu-latest'
     steps:
       - task: AzureCLI@2
         displayName: "Swap Slots"
