@@ -1,16 +1,16 @@
 variable "LOCATION" {
   type    = string
-  default = "centralus"
+  default = "exampl"
 }
 
 variable "RESOURCE_NAME_PREFIX" {
   type    = string
-  default = "adolab"
+  default = "example"
 }
 
 variable "ENV" {
   type    = string
-  default = "prod"
+  default = "exampl"
 }
 
 variable "SQL_SERVER_ADMINISTRATOR_LOGIN" {
