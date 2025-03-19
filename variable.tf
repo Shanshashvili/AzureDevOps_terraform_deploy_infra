@@ -10,7 +10,7 @@ variable "RESOURCE_NAME_PREFIX" {
 
 variable "ENV" {
   type    = string
-  default = "exampl"
+  default = "example"
 }
 
 variable "SQL_SERVER_ADMINISTRATOR_LOGIN" {
