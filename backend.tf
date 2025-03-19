@@ -8,8 +8,8 @@ terraform {
   required_version = ">= 1.3.8"
 
   backend "azurerm" {
-    resource_group_name  = "rg-adolearn-epam-cloud-and-devops-practice-tfstate"
-    storage_account_name = "adolearntfstatestorag"
+    resource_group_name  = "rg-example-tfstate"
+    storage_account_name = "exampletfstatestorag"
     container_name       = "tfstate"
     key                  = "terraform.tfstate"
   }
